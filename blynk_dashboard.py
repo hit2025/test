@@ -12,9 +12,6 @@ BLYNK_TEMPLATE_ID = "TMPL3WwPBAikP"
 BLYNK_AUTH_TOKEN  = "RjMBf-HzBoqR5BSr0KeYHHWFZi8B8icQ"
 BASE_URL = f"https://blynk.cloud/external/api/get?token={BLYNK_AUTH_TOKEN}"
 
-# -------------------------
-# Waste Management Data (HIT Campus)
-# -------------------------
 CAMPUS_CENTER = (22.0509, 88.0725)
 
 bins = [
@@ -103,7 +100,7 @@ async def submit_complaint(request: Request):
 def qrcode():
     return """
     <html><body>
-    <h2>Scan this QR to file a complaint</h2>
+    <h2>Scan this QR to file a complaint (Mahakumbh)</h2>
     <img src="https://api.qrserver.com/v1/create-qr-code/?data=smart-waste-management-realtime.onrender.com/complaint_form&size=200x200"/>
     </body></html>
     """
@@ -112,7 +109,7 @@ def qrcode():
 def complaint_form():
     return """
     <html><body>
-    <h2>Submit Complaint</h2>
+    <h2>Submit Complaint (For Ujjain-2028)</h2>
     <form method="post" action="/complaint_form">
       Phone: <input type="text" name="phone"/><br><br>
       Message: <textarea name="message"></textarea><br><br>
@@ -241,3 +238,6 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8001"))   # Render supplies PORT
     print("Server starting. Use the public Render URL shown in your dashboard.")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+
