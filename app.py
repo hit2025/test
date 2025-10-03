@@ -1,8 +1,7 @@
-# HIT Smart Campus Prototype 
-
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import datetime, threading, time, random, math
+from fastapi import Request
 
 app = FastAPI()
 CAMPUS_CENTER = (22.0509, 88.0725)
@@ -45,7 +44,7 @@ vehicles = [
     for i in range(3)
 ]
 
-assignments, comparison_stats = [], []
+assignments, comparison_stats, bin_alerts = [], [], []
 auto_sim = {"running": False}
 
 # -------------------------
@@ -67,12 +66,20 @@ def get_assignments():
 def get_comparisons():
     return comparison_stats
 
+@app.get("/alerts")
+def get_alerts():
+    return bin_alerts
+
 @app.post("/fill_random")
 def fill_random():
     b = random.choice(bins)
     b["fill"] = min(100, b["fill"] + random.randint(20, 40))
     if b["fill"] >= 100:
         b["fill"], b["status"] = 100, "FULL"
+        bin_alerts.append({
+            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+            "msg": f"Bin {b['id']} is FULL and sent an alert"
+        })
     return {"ok": True, "bin": b}
 
 @app.post("/assign_nearest_full")
@@ -103,6 +110,11 @@ def assign_nearest_full():
         "others": [{"id": v["id"], "dist": round(d, 1)} for d, v in dists]
     }
     comparison_stats.append(comp)
+
+    bin_alerts.append({
+        "time": rec["time"],
+        "msg": f"Vehicle {nearest_vehicle['id']} accepted task for Bin {b['id']} ({round(dists[0][0],1)}m)"
+    })
     return {"ok": True, "assignment": rec, "comparison": comp}
 
 @app.post("/complete_trip/{vid}/{bid}")
@@ -113,6 +125,10 @@ def complete_trip(vid: int, bid: int):
     for b in bins:
         if b["id"] == bid:
             b["fill"], b["status"] = 0, "OK"
+    bin_alerts.append({
+        "time": datetime.datetime.now().strftime("%H:%M:%S"),
+        "msg": f"Vehicle {vid} completed trip for Bin {bid}"
+    })
     return {"ok": True}
 
 @app.post("/reset")
@@ -126,6 +142,7 @@ def reset_all():
         })
     assignments.clear()
     comparison_stats.clear()
+    bin_alerts.clear()
     auto_sim["running"] = False
     return {"ok": True}
 
@@ -161,10 +178,28 @@ def auto_loop():
                 b["fill"] = min(100, b["fill"] + random.randint(10, 25))
                 if b["fill"] >= 100:
                     b["status"] = "FULL"
+                    bin_alerts.append({
+                        "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                        "msg": f"Bin {b['id']} is FULL and sent an alert"
+                    })
             assign_nearest_full()
-        time.sleep(6)
+        time.sleep(3)
 
 threading.Thread(target=auto_loop, daemon=True).start()
+
+@app.post("/record_route_assignment")
+async def record_route_assignment(request: Request):
+    data = await request.json()
+    rec = {
+        "time": datetime.datetime.now().strftime("%H:%M:%S"),
+        "vehicle_id": data["vehicle_id"],
+        "bin_id": data["bin_id"],
+        "route_distance": round(data["distance"],1),
+        "route_time": round(data["time"],1)
+    }
+    comparison_stats.append(rec)
+    return {"ok": True}
+
 
 # -------------------------
 # UI
@@ -249,8 +284,8 @@ button:hover {{ background:#0056b3; }}
         <h3>Vehicles</h3><div id="vehlist"></div>
         <h3>Assignments</h3><div class="scrollbox" id="assignlist"></div>
         <h3>Comparison Stats</h3><div class="scrollbox" id="comparisons"></div>
+        <h3>📡 Bin Alerts</h3><div class="scrollbox" id="alertlist"></div>
         <h3>Water Tap</h3><div id="waterTapInfo">Lat: 22.0507, Lng: 88.0723</div>
-
       </div>
     </div>
   </div>
@@ -285,10 +320,9 @@ function switchTab(id) {{
   document.getElementById(id).classList.add('active');
 }}
 
-// ---------------- Simulation (FULL inline) ----------------
 const map = L.map('map').setView([22.0509,88.0725], 17);
 L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png').addTo(map);
-const binMarkers = {{}}, vehMarkers = {{}}, routes = {{}};
+const binMarkers = {{}}, vehMarkers = {{}}, routes = {{}}, animHandles = {{}};
 
 const waterTap = L.marker([22.0507, 88.0723], {{
   icon: L.icon({{
@@ -297,7 +331,6 @@ const waterTap = L.marker([22.0507, 88.0723], {{
     iconAnchor: [20, 40]
   }})
 }}).addTo(map).bindPopup("💧 Water Tap<br>Lat: 22.0507, Lng: 88.0723");
-
 
 function carIcon(c) {{
   return L.icon({{
@@ -310,7 +343,13 @@ function carIcon(c) {{
 }}
 
 function animateVehicle(v, b) {{
-  if (routes[v.id]) map.removeControl(routes[v.id]);
+  // prevent duplicate animations for same vehicle
+  if (animHandles[v.id] && animHandles[v.id].running) return;
+
+  // remove previous route control and marker if any
+  if (routes[v.id]) try {{ map.removeControl(routes[v.id]); }} catch(e){{}}
+  if (vehMarkers[v.id]) try {{ vehMarkers[v.id].remove(); }} catch(e){{}}
+
   const rc = L.Routing.control({{
     waypoints: [L.latLng(v.lat, v.lng), L.latLng(b.lat, b.lng)],
     lineOptions: {{ styles: [{{ color: 'purple', weight: 4, opacity: 0.7 }}] }},
@@ -319,16 +358,98 @@ function animateVehicle(v, b) {{
     fitSelectedRoutes: false,
     createMarker: () => null
   }}).on('routesfound', e => {{
-    const coords = e.routes[0].coordinates.map(c => [c.lat, c.lng]);
-    const mm = L.Marker.movingMarker(coords, coords.length * 500, {{ icon: carIcon("orange") }}).addTo(map);
-    if (vehMarkers[v.id]) vehMarkers[v.id].remove();
-    vehMarkers[v.id] = mm;
-    mm.start();
-    mm.on('end', () => {{
-      fetch(`/complete_trip/${{v.id}}/${{b.id}}`, {{ method: 'POST' }}).then(() => refresh());
-    }});
+    const route = e.routes[0];
+    const coords = route.coordinates.map(c => L.latLng(c.lat, c.lng));
+    const totalDist = route.summary && route.summary.totalDistance ? route.summary.totalDistance : 0; // meters
+    const totalTime = route.summary && route.summary.totalTime ? route.summary.totalTime : 0; // seconds
+
+    // report the exact route distance/time back to server so backend/dashboard match frontend
+    try {{
+      fetch('/record_route_assignment', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ vehicle_id: v.id, bin_id: b.id, distance: totalDist, time: totalTime }})
+      }});
+    }} catch (err){{}}
+
+    // create marker at start
+    const marker = L.marker([v.lat, v.lng], {{ icon: carIcon("orange") }}).addTo(map);
+    vehMarkers[v.id] = marker;
+
+    // speak assignment using routing totals (keeps consistent with map)
+    try {{
+      const assignMsg = `Vehicle ${{v.id}} assigned to Bin ${{b.id}} — distance ${{Math.round(totalDist)}} meters, ETA ${{Math.round(totalTime)}} seconds.`;
+      speechSynthesis.speak(new SpeechSynthesisUtterance(assignMsg));
+    }} catch (err){{}}
+
+    // build segments (distance & duration) using accurate distanceTo
+    const speed = 20 * 1000 / 3600; // 20 km/h -> m/s (adjust if needed)
+    const segments = [];
+    for (let i = 1; i < coords.length; i++) {{
+      const p1 = coords[i - 1];
+      const p2 = coords[i];
+      const dist = p1.distanceTo(p2); // meters
+      const dur = Math.max(200, Math.round((dist / speed) * 1000)); // ms per segment, min 200ms
+      segments.push({{ start: p1, end: p2, dist: dist, dur: dur }});
+    }}
+    if (segments.length === 0) segments.push({{ start: coords[0], end: coords[0], dist: 0, dur: 1000 }});
+
+    // set anim handle and mark running
+    animHandles[v.id] = {{ running: true, raf: null }};
+
+    // animation state
+    let segIndex = 0;
+    let segStartTime = null;
+
+    function step(timestamp) {{
+      if (!segStartTime) segStartTime = timestamp;
+      const seg = segments[segIndex];
+      const elapsed = timestamp - segStartTime;
+      const t = Math.min(1, elapsed / seg.dur);
+
+      // interpolate lat/lng
+      const lat = seg.start.lat + (seg.end.lat - seg.start.lat) * t;
+      const lng = seg.start.lng + (seg.end.lng - seg.start.lng) * t;
+      marker.setLatLng([lat, lng]);
+
+      if (t >= 1) {{
+        // move to next segment
+        segIndex++;
+        segStartTime = timestamp;
+        if (segIndex >= segments.length) {{
+          // finished all segments
+          animHandles[v.id].running = false;
+          // small pause to simulate unloading then complete trip
+          setTimeout(() => {{
+            try {{
+              const doneMsg = `Vehicle ${{v.id}} completed collection from Bin ${{b.id}}.`;
+              speechSynthesis.speak(new SpeechSynthesisUtterance(doneMsg));
+            }} catch (err){{}}
+            fetch(`/complete_trip/${{v.id}}/${{b.id}}`, {{ method: 'POST' }})
+              .then(() => refresh())
+              .catch(() => refresh());
+          }}, 800);
+          return;
+        }}
+      }}
+
+      // continue animation
+      animHandles[v.id].raf = requestAnimationFrame(step);
+    }}
+
+    // start
+    animHandles[v.id].raf = requestAnimationFrame(step);
   }}).addTo(map);
+
+  // store route controller
   routes[v.id] = rc;
+}}
+
+
+
+function speak(msg) {{
+  let utter = new SpeechSynthesisUtterance(msg);
+  speechSynthesis.speak(utter);
 }}
 
 async function refresh() {{
@@ -336,6 +457,7 @@ async function refresh() {{
   const vs = await fetch('/vehicles').then(r => r.json());
   const asg = await fetch('/assignments').then(r => r.json());
   const comps = await fetch('/comparisons').then(r => r.json());
+  const alerts = await fetch('/alerts').then(r => r.json());
 
   let bh = "";
   bins.forEach(b => {{
@@ -372,6 +494,16 @@ async function refresh() {{
   }});
   document.getElementById("comparisons").innerHTML = ch;
 
+  let al = "";
+  alerts.slice().reverse().forEach(a => {{
+    al += `<div><b>${{a.time}}</b>: ${{a.msg}}</div>`;
+  }});
+  document.getElementById("alertlist").innerHTML = al;
+  if (alerts.length > 0) {{
+    let last = alerts[alerts.length-1];
+    speak(last.msg);
+  }}
+
   document.getElementById("wBins").innerHTML = bins.map(b => {{
     const col = b.status == "FULL" ? "red" : (b.fill > 50 ? "orange" : "green");
     return `<div class="binbar"><div class="binfill" style="width:${{b.fill}}%;background:${{col}}">${{b.fill}}%</div></div>`;
@@ -394,7 +526,6 @@ async function stopAuto() {{ await fetch('/stop_auto', {{ method: 'POST' }}); }}
 setInterval(refresh, 3000);
 refresh();
 
-// ---------------- Gauges ----------------
 const airParams = ["NH3","Smoke","Alcohol","Benzene","CO2","NOx"];
 const waterParams = ["TDS","EC"];
 function createGauge(ctx,label) {{
@@ -444,6 +575,6 @@ setInterval(updateGauges,3000);
 # -------------------------
 if __name__ == "__main__":
     import uvicorn, os
-    port = int(os.environ.get("PORT", 8000))  # use Render’s $PORT
+    port = int(os.environ.get("PORT", 8000))
     print(f"Starting on port {port} ...")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="127.0.0.1", port=port)
