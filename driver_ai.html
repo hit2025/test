@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Driver Dashboard | Smart Waste Management</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+<script src="https://rawcdn.githack.com/ewoken/Leaflet.MovingMarker/master/MovingMarker.js"></script>
+
+<style>
+body {
+  margin: 0;
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: #f0f3f7;
+  overflow: hidden;
+}
+.header {
+  background: linear-gradient(90deg, #003366, #0055a5);
+  color: white;
+  text-align: center;
+  padding: 12px 0;
+  font-size: 22px;
+  font-weight: bold;
+}
+#map {
+  width: 100%;
+  height: 80vh;
+  border-top: 3px solid #0055a5;
+  border-bottom: 3px solid #0055a5;
+}
+#info {
+  background: white;
+  padding: 10px;
+  font-size: 16px;
+  text-align: center;
+  border-top: 2px solid #ddd;
+  box-shadow: 0 0 6px rgba(0,0,0,0.1);
+}
+#stats {
+  background: #ffffff;
+  padding: 10px;
+  font-size: 15px;
+  text-align: center;
+  border-top: 2px solid #ccc;
+}
+.vehicle-icon {
+  filter: drop-shadow(0px 0px 4px #222);
+}
+.route-line {
+  color: purple;
+  weight: 5;
+  opacity: 0.8;
+}
+</style>
+</head>
+<body>
+
+<div class="header">🚛 Driver Dashboard</div>
+<div id="info">Loading vehicle assignment...</div>
+<div id="map"></div>
+<div id="stats">Driver performance stats loading...</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const vehicleId = params.get("id") || 1;
+
+const map = L.map("map").setView([22.0509, 88.0725], 16);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+
+let vehicleMarker = null;
+let routeControl = null;
+let activeRoute = null;
+let routeCoordinates = [];
+let animHandle = null;
+let speaking = false;
+
+// Speech helper
+function speak(message) {
+  if (!speaking) {
+    const utter = new SpeechSynthesisUtterance(message);
+    utter.lang = "en-US";
+    utter.rate = 1.0;
+    speechSynthesis.speak(utter);
+    speaking = true;
+    utter.onend = () => (speaking = false);
+  }
+}
+
+// Fetch assignment and update UI
+async function fetchAssignment() {
+  const res = await fetch(`/driver/${vehicleId}`);
+  const data = await res.json();
+  const infoDiv = document.getElementById("info");
+  const statsDiv = document.getElementById("stats");
+
+  if (data.status === "ERROR") {
+    infoDiv.innerHTML = `<b>Error:</b> ${data.message}`;
+    return;
+  }
+
+  if (data.status === "IDLE") {
+    infoDiv.innerHTML = `<b>Vehicle ${vehicleId}</b>: No active assignment. Waiting for task...`;
+    statsDiv.innerHTML = `
+      Completed Trips: <b>${data.completed || 0}</b> |
+      Total Distance: <b>${(data.distance_travelled || 0).toFixed(1)} m</b>`;
+    return;
+  }
+
+  // Vehicle assigned
+  const v = data.vehicle_location;
+  const b = data.assigned_bin;
+
+  infoDiv.innerHTML = `
+    <b>Vehicle ${vehicleId}</b> assigned to <b>Bin ${b.id}</b><br>
+    Bin Fill Level: ${b.fill}%<br>
+    Destination: (${b.lat.toFixed(5)}, ${b.lng.toFixed(5)})`;
+
+  statsDiv.innerHTML = `
+    Completed Trips: <b>${data.completed}</b> |
+    Total Distance: <b>${data.distance_travelled.toFixed(1)} m</b>`;
+
+  if (vehicleMarker) map.removeLayer(vehicleMarker);
+  if (routeControl) map.removeControl(routeControl);
+  if (animHandle) cancelAnimationFrame(animHandle);
+
+  vehicleMarker = L.marker([v.lat, v.lng], {
+    icon: L.icon({
+      iconUrl: "https://cdn-icons-png.flaticon.com/512/3097/3097144.png",
+      iconSize: [42, 42],
+      iconAnchor: [21, 21],
+      className: "vehicle-icon"
+    })
+  }).addTo(map).bindPopup("🚚 Your Vehicle");
+
+  const binMarker = L.marker([b.lat, b.lng], {
+    icon: L.icon({
+      iconUrl: "https://cdn-icons-png.flaticon.com/512/854/854878.png",
+      iconSize: [38, 38],
+      iconAnchor: [19, 38]
+    })
+  }).addTo(map).bindPopup(`🗑️ Bin ${b.id}`);
+
+  speak(`Vehicle ${vehicleId}, please proceed to Bin ${b.id}. Distance and route displayed.`);
+
+  routeControl = L.Routing.control({
+    waypoints: [L.latLng(v.lat, v.lng), L.latLng(b.lat, b.lng)],
+    lineOptions: { styles: [{ color: "purple", weight: 5, opacity: 0.8 }] },
+    addWaypoints: false,
+    draggableWaypoints: false,
+    fitSelectedRoutes: true,
+    createMarker: () => null
+  })
+  .on("routesfound", e => {
+    activeRoute = e.routes[0];
+    routeCoordinates = activeRoute.coordinates;
+    startVehicleAnimation(routeCoordinates);
+  })
+  .addTo(map);
+}
+
+// Animate vehicle icon along route
+function startVehicleAnimation(coords) {
+  let index = 0;
+  const speed = 20 / 3.6; // 20 km/h in m/s
+  let lastTimestamp = null;
+
+  function step(timestamp) {
+    if (!lastTimestamp) lastTimestamp = timestamp;
+    const delta = (timestamp - lastTimestamp) / 1000;
+    lastTimestamp = timestamp;
+
+    if (index < coords.length - 1) {
+      const p1 = coords[index];
+      const p2 = coords[index + 1];
+      const dist = map.distance(p1, p2);
+      const move = speed * delta;
+
+      const t = Math.min(1, move / dist);
+      const lat = p1.lat + (p2.lat - p1.lat) * t;
+      const lng = p1.lng + (p2.lng - p1.lng) * t;
+
+      vehicleMarker.setLatLng([lat, lng]);
+      map.panTo([lat, lng], { animate: true });
+
+      if (t >= 1) index++;
+      animHandle = requestAnimationFrame(step);
+    } else {
+      completeTrip();
+    }
+  }
+
+  animHandle = requestAnimationFrame(step);
+}
+
+// Trigger completion
+function completeTrip() {
+  speak(`Vehicle ${vehicleId}, trip completed successfully.`);
+  fetch(`/complete_trip/${vehicleId}/${vehicleId}`, { method: "POST" });
+  setTimeout(fetchAssignment, 3000);
+}
+
+// Refresh every 10 seconds for dynamic updates
+setInterval(fetchAssignment, 10000);
+fetchAssignment();
+</script>
+</body>
+</html>
