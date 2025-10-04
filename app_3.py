@@ -194,7 +194,7 @@ def auto_loop():
 threading.Thread(target=auto_loop, daemon=True).start()
 
 # -------------------------
-# Record route assignment (simplified)
+# Record route assignment 
 # -------------------------
 @app.post("/record_route_assignment")
 async def record_route_assignment(request: Request):
@@ -249,8 +249,8 @@ def driver_complete(vehicle_id: int):
 
 @app.get("/driver_dashboard", response_class=HTMLResponse)
 def driver_dashboard_page(id: int = 1):
-    if os.path.exists("driver.html"):
-        return open("driver.html", encoding="utf-8").read()
+    if os.path.exists("driver_prev.html"):
+        return open("driver_prev.html", encoding="utf-8").read()
     return HTMLResponse("<h2>Driver dashboard file not found</h2>")
 
 # -------------------------
@@ -267,4 +267,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8001))
     print(f"Starting on port {port} ...")
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
