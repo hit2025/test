@@ -297,8 +297,8 @@ def driver_dashboard(vehicle_id: int):
 
 @app.get("/driver_dashboard", response_class=HTMLResponse)
 def serve_driver_dashboard():
-    if os.path.exists("driver.html"):
-        return open("driver.html", encoding="utf-8").read()
+    if os.path.exists("driver_ai.html"):
+        return open("driver_ai.html", encoding="utf-8").read()
     return "<h2>Driver dashboard file not found</h2>"
 
 # ------------------------------
@@ -313,6 +313,7 @@ def home():
 # ------------------------------
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8001))
+    port = int(os.environ.get("PORT", 8000))
     print(f"🚀 Starting Smart Waste Management Server on http://127.0.0.1:{port}")
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
