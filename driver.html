@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Driver Dashboard | Waste Vehicle Assistant</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+<script src="https://rawcdn.githack.com/ewoken/Leaflet.MovingMarker/master/MovingMarker.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { margin:0; font-family:Arial, sans-serif; background:#f3f6fa; }
+  .header { background:#004080; color:white; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; }
+  .header h1 { margin:0; font-size:18px; }
+  .container { display:flex; gap:10px; padding:10px; height:calc(100vh - 56px); box-sizing:border-box; }
+  .left { flex:1; background:white; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.08); padding:8px; display:flex; flex-direction:column; }
+  #map { flex:1; border-radius:6px; }
+  .panel { margin-top:8px; padding:8px; border-radius:6px; background:#fbfbfb; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+  .info { font-size:14px; }
+  .stat { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #eee; }
+  .small { font-size:12px; color:#666; }
+  .footer { margin-top:8px; display:flex; gap:8px; align-items:center; justify-content:space-between; }
+  .btn { padding:8px 10px; background:#007bff; color:white; border-radius:6px; text-decoration:none; display:inline-block; }
+  .trip-list { max-height:160px; overflow:auto; padding:6px; }
+  @media (max-width:900px){
+    .container{ flex-direction:column; height:calc(100vh - 56px); }
+    .left{ order:2; }
+    .right{ order:1; }
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>🚚 Driver Dashboard</h1>
+    <div id="driverTitle" style="font-size:14px"></div>
+  </div>
+
+  <div class="container">
+    <div class="left">
+      <div id="map" style="height:60%;"></div>
+
+      <div class="panel" style="margin-top:8px;">
+        <div id="assignmentInfo" class="info">
+          Loading assignment...
+        </div>
+        <div style="margin-top:8px;">
+          <div class="stat"><div class="small">Completed Trips</div><div id="completedCount">0</div></div>
+          <div class="stat"><div class="small">Total Distance (m)</div><div id="totalDistance">0</div></div>
+          <div class="stat"><div class="small">Average ETA (s)</div><div id="avgEta">0</div></div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:8px;">
+        <h3 style="margin:0 0 8px 0;font-size:15px;">Trip History</h3>
+        <div class="trip-list" id="tripHistory">
+          No trips yet.
+        </div>
+      </div>
+    </div>
+
+    <div class="right" style="width:320px;">
+      <div class="panel">
+        <h3 style="margin:0 0 8px 0;font-size:15px;">Driver Controls</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <a href="#" class="btn" id="refreshBtn">Refresh</a>
+          <a href="/" class="btn" style="background:#28a745">Open Admin</a>
+        </div>
+        <div style="margin-top:10px;" id="liveMsg" class="small">Live updates every 5s</div>
+      </div>
+
+      <div class="panel" style="margin-top:10px;">
+        <h3 style="margin:0 0 8px 0;font-size:15px;">Performance Chart</h3>
+        <canvas id="perfChart" style="width:100%;height:160px;"></canvas>
+      </div>
+    </div>
+  </div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const vehicleId = parseInt(params.get('id') || '1', 10);
+const pollInterval = 5000; // ms, matches backend decisions
+let assigned = null;
+let map, vehicleMarker, binMarker, routeControl, movingMarker;
+let animHandle = null;
+let perfChart = null;
+
+document.getElementById('driverTitle').innerText = `Driver ${vehicleId}`;
+
+// initialize map
+function initMap() {
+  map = L.map('map').setView([22.0509, 88.0725], 16);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+}
+initMap();
+
+// simple icon helper
+function carIcon() {
+  return L.icon({
+    iconUrl: "https://cdn-icons-png.flaticon.com/512/3097/3097144.png",
+    iconSize: [40,40],
+    iconAnchor: [20,20]
+  });
+}
+
+function binIcon() {
+  return L.icon({
+    iconUrl: "https://cdn-icons-png.flaticon.com/512/854/854878.png",
+    iconSize: [36,36],
+    iconAnchor: [18,36]
+  });
+}
+
+// Chart.js perf chart (completed trips over time)
+function initChart() {
+  const ctx = document.getElementById('perfChart').getContext('2d');
+  perfChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{ label: 'Trips', data: [], fill:false, tension:0.3 }]},
+    options: { scales: { x: { display: true }, y: { beginAtZero:true, precision:0 } } }
+  });
+}
+initChart();
+
+async function fetchDriver() {
+  try {
+    const res = await fetch(`/driver/${vehicleId}`);
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('driver fetch error', err);
+    return null;
+  }
+}
+
+function speak(msg) {
+  try {
+    const u = new SpeechSynthesisUtterance(msg);
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+function updateStatsUI(stats) {
+  document.getElementById('completedCount').innerText = stats.completed || 0;
+  document.getElementById('totalDistance').innerText = Math.round(stats.distance || 0);
+  // avg ETA from history (compute)
+  const hist = stats.history || [];
+  if (hist.length > 0) {
+    const avg = hist.reduce((s, h) => s + (h.duration || 0), 0) / hist.length;
+    document.getElementById('avgEta').innerText = Math.round(avg);
+  } else {
+    document.getElementById('avgEta').innerText = '0';
+  }
+
+  // update trip list
+  const list = document.getElementById('tripHistory');
+  if (!hist.length) {
+    list.innerHTML = 'No trips yet.';
+  } else {
+    list.innerHTML = hist.slice().reverse().map(h => `<div style="padding:6px;border-bottom:1px solid #eee"><b>${h.time}</b> — Bin ${h.bin} — ${h.distance} m — ${h.duration}s</div>`).join('');
+  }
+
+  // update chart
+  const labels = hist.map(h => h.time);
+  const data = hist.map((h, idx) => idx+1);
+  perfChart.data.labels = labels;
+  perfChart.data.datasets[0].data = data;
+  perfChart.update();
+}
+
+function animateAlongRoute(coords, totalTimeSec) {
+  // coords is array of [lat, lng] pairs
+  if (movingMarker) {
+    try { movingMarker.remove(); } catch(e){ }
+    movingMarker = null;
+  }
+  // create marker at start
+  if (!coords || coords.length === 0) return;
+
+  movingMarker = L.Marker.movingMarker(coords.map(c => L.latLng(c[0], c[1])), coords.length > 1 ? coords.map(() => Math.max(200, (totalTimeSec*1000)/coords.length)) : [1000], { icon: carIcon() }).addTo(map);
+  movingMarker.start();
+  movingMarker.on('end', () => {
+    // notify server about complete_trip only after main simulation triggers it — driver UI only announces
+    speak(`Vehicle ${vehicleId} reached destination`);
+    // refresh UI after small pause
+    setTimeout(() => refreshOnce(), 800);
+  });
+  return movingMarker;
+}
+
+let lastAssignedBin = null;
+
+async function refreshOnce() {
+  const data = await fetchDriver();
+  if (!data) return;
+
+  if (data.status === 'IDLE') {
+    document.getElementById('assignmentInfo').innerHTML = `<b>Vehicle ${vehicleId}</b>: No active assignment`;
+    // show location if available
+    const loc = data.location;
+    if (loc) {
+      if (!vehicleMarker) {
+        vehicleMarker = L.marker([loc.lat, loc.lng], { icon: carIcon() }).addTo(map).bindPopup('Your vehicle');
+        map.setView([loc.lat, loc.lng], 16);
+      } else {
+        vehicleMarker.setLatLng([loc.lat, loc.lng]);
+      }
+    }
+    updateStatsUI(data.stats || {});
+    // stop any route animation
+    try { if (routeControl) { map.removeControl(routeControl); routeControl = null; } } catch(e){}
+    try { if (movingMarker) { movingMarker.stop(); movingMarker.remove(); movingMarker = null; } } catch(e){}
+    lastAssignedBin = null;
+    return;
+  }
+
+  if (data.status === 'ASSIGNED') {
+    const v = data.vehicle_location, b = data.assigned_bin;
+    document.getElementById('assignmentInfo').innerHTML = `
+      <div><b>Assigned Bin: ${b.id}</b></div>
+      <div class="small">Fill: ${b.fill}%</div>
+      <div class="small">Coordinates: ${b.lat.toFixed(5)}, ${b.lng.toFixed(5)}</div>
+      <div class="small">Distance (map estimate): ${data.distance_m} m</div>
+      <div class="small">ETA: ${data.eta_s} s</div>
+    `;
+
+    // update vehicle marker
+    if (!vehicleMarker) {
+      vehicleMarker = L.marker([v.lat, v.lng], { icon: carIcon() }).addTo(map).bindPopup('Your vehicle');
+    } else {
+      vehicleMarker.setLatLng([v.lat, v.lng]);
+    }
+
+    // update bin marker
+    if (!binMarker) {
+      binMarker = L.marker([b.lat, b.lng], { icon: binIcon() }).addTo(map).bindPopup(`Bin ${b.id}`);
+    } else {
+      binMarker.setLatLng([b.lat, b.lng]);
+    }
+
+    // if new assignment received (bin changed), speak and draw route
+    if (lastAssignedBin !== b.id) {
+      lastAssignedBin = b.id;
+      const assignMsg = `New assignment: Bin ${b.id}. Distance ${Math.round(data.distance_m)} meters. ETA ${Math.round(data.eta_s)} seconds.`;
+      speak(assignMsg);
+
+      // remove previous route control
+      try { if (routeControl) { map.removeControl(routeControl); routeControl = null; } } catch(e){}
+
+      // add new route and animate
+      routeControl = L.Routing.control({
+        waypoints: [L.latLng(v.lat, v.lng), L.latLng(b.lat, b.lng)],
+        lineOptions: { styles: [{ color: 'purple', weight: 5, opacity: 0.7 }] },
+        addWaypoints: false,
+        draggableWaypoints: false,
+        fitSelectedRoutes: true,
+        createMarker: () => null
+      }).on('routesfound', function(e) {
+        const route = e.routes[0];
+        const coords = route.coordinates.map(c => [c.lat, c.lng]);
+        const totalDist = route.summary ? route.summary.totalDistance : data.distance_m;
+        const totalTime = route.summary ? route.summary.totalTime : data.eta_s;
+        // report back the routing summary to server for stats sync
+        try {
+          fetch('/record_route_assignment', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vehicle_id: vehicleId, bin_id: b.id, distance: totalDist, time: totalTime })
+          });
+        } catch (err) {}
+
+        // animate along route using movingMarker (smooth independent animation but same speed)
+        if (movingMarker) { try { movingMarker.remove(); } catch(e){} movingMarker = null; }
+        // compute per-segment times proportional to distance (totalTime is seconds)
+        const segs = coords;
+        const segDurations = [];
+        if (route.coordinates.length > 1) {
+          // compute segment distances using leaflet distanceTo
+          const latlngs = route.coordinates.map(c => L.latLng(c.lat, c.lng));
+          let totalSegDist = 0;
+          let segDist = [];
+          for (let i = 1; i < latlngs.length; i++) {
+            const d = latlngs[i-1].distanceTo(latlngs[i]);
+            segDist.push(d);
+            totalSegDist += d;
+          }
+          for (let d of segDist) {
+            // proportion of totalTime
+            const ms = Math.max(200, Math.round((d / totalSegDist) * totalTime * 1000));
+            segDurations.push(ms);
+          }
+        } else {
+          segDurations.push(Math.max(500, Math.round((totalTime || 5) * 1000)));
+        }
+        movingMarker = L.Marker.movingMarker(coords.map(c => L.latLng(c[0], c[1])), segDurations, { icon: carIcon() }).addTo(map);
+        movingMarker.start();
+        movingMarker.on('end', () => {
+          speak(`Vehicle ${vehicleId} arrived at Bin ${b.id}`);
+          // after small pause, call refresh to update server-driven completion state
+          setTimeout(async () => {
+            // Trigger complete_trip on server so server sets bin to OK and vehicle to IDLE
+            try {
+              await fetch(`/complete_trip/${vehicleId}/${b.id}`, { method: 'POST' });
+            } catch (e) {}
+            await refreshOnce();
+          }, 800);
+        });
+
+      }).addTo(map);
+    } // end new assignment handling
+
+    // update stats area
+    updateStatsUI(data.stats || {});
+  }
+}
+
+document.getElementById('refreshBtn').addEventListener('click', (e) => {
+  e.preventDefault();
+  refreshOnce();
+});
+
+async function periodicRefresh() {
+  await refreshOnce();
+  setTimeout(periodicRefresh, pollInterval);
+}
+
+// kick-off
+periodicRefresh();
+
+</script>
+</body>
+</html>

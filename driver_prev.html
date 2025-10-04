@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Driver Dashboard | Smart Waste Vehicle Assistant</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+<script src="https://rawcdn.githack.com/ewoken/Leaflet.MovingMarker/master/MovingMarker.js"></script>
+<style>
+body { margin:0; font-family:Arial, sans-serif; background:#f0f2f5; }
+.header { background:#004080; color:white; padding:12px; text-align:center; font-size:22px; font-weight:bold; letter-spacing:0.5px; }
+#info { background:white; padding:10px; box-shadow:0 2px 5px rgba(0,0,0,0.1); font-size:16px; text-align:center; }
+#map { width:100%; height:85vh; }
+button {
+  background:#007bff; color:white; border:none; padding:10px 18px;
+  border-radius:6px; font-size:16px; cursor:pointer; margin-top:10px;
+}
+button:hover { background:#0056b3; }
+</style>
+</head>
+<body>
+
+<div class="header">🚛 Vehicle Driver Dashboard</div>
+<div id="info">Fetching assignment details...</div>
+<div id="map"></div>
+<div style="text-align:center;">
+  <button id="completeBtn" style="display:none;">✅ Mark as Reached</button>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const vehicleId = params.get("id") || 1;
+
+const map = L.map('map').setView([22.0509, 88.0725], 16);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+let vehicleMarker = null;
+let routeControl = null;
+let moving = null;
+
+// 🔊 Speak helper
+function speak(msg) {
+  const u = new SpeechSynthesisUtterance(msg);
+  speechSynthesis.speak(u);
+}
+
+// ✅ Fetch assignment and render route
+async function loadAssignment() {
+  const res = await fetch(`/driver_status/${vehicleId}`);
+  const data = await res.json();
+  const info = document.getElementById("info");
+  const btn = document.getElementById("completeBtn");
+
+  if (data.status === "ERROR") {
+    info.innerHTML = "❌ Vehicle not found.";
+    btn.style.display = "none";
+    return;
+  }
+
+  if (data.status === "IDLE") {
+    info.innerHTML = `<b>Vehicle ${vehicleId}</b>: No active task assigned.`;
+    btn.style.display = "none";
+    if (vehicleMarker) map.removeLayer(vehicleMarker);
+    if (routeControl) map.removeControl(routeControl);
+    return;
+  }
+
+  if (data.status === "ASSIGNED") {
+    const v = data.vehicle_location;
+    const b = data.assigned_bin;
+    const dist = data.distance;
+
+    info.innerHTML = `
+      <b>Vehicle ${vehicleId}</b> → <b>Bin ${b.id}</b><br>
+      Bin Fill: ${b.fill}%<br>
+      Distance: ${dist} m<br>
+      Destination: (${b.lat.toFixed(5)}, ${b.lng.toFixed(5)})`;
+
+    btn.style.display = "inline-block";
+
+    // Clean up previous layers
+    if (vehicleMarker) map.removeLayer(vehicleMarker);
+    if (routeControl) map.removeControl(routeControl);
+    if (moving) map.removeLayer(moving);
+
+    // Vehicle marker
+    vehicleMarker = L.marker([v.lat, v.lng], {
+      icon: L.icon({
+        iconUrl: "https://cdn-icons-png.flaticon.com/512/3097/3097144.png",
+        iconSize: [40, 40],
+        iconAnchor: [20, 20]
+      })
+    }).addTo(map).bindPopup("Your Vehicle").openPopup();
+
+    // Bin marker
+    const binMarker = L.marker([b.lat, b.lng], {
+      icon: L.icon({
+        iconUrl: "https://cdn-icons-png.flaticon.com/512/854/854878.png",
+        iconSize: [40, 40],
+        iconAnchor: [20, 40]
+      })
+    }).addTo(map).bindPopup(`Bin ${b.id}`);
+
+    // Route drawing
+    routeControl = L.Routing.control({
+      waypoints: [L.latLng(v.lat, v.lng), L.latLng(b.lat, b.lng)],
+      lineOptions: { styles: [{ color: 'purple', weight: 5, opacity: 0.7 }] },
+      addWaypoints: false,
+      draggableWaypoints: false,
+      fitSelectedRoutes: true,
+      createMarker: () => null
+    })
+    .on('routesfound', e => {
+      const route = e.routes[0];
+      const coords = route.coordinates.map(c => [c.lat, c.lng]);
+      const totalDist = route.summary.totalDistance;
+      const totalTime = route.summary.totalTime;
+      speak(`Proceed to Bin ${b.id}. Distance ${Math.round(totalDist)} meters, estimated time ${Math.round(totalTime)} seconds.`);
+      
+      const speed = 15 * 1000 / 3600; // 15 km/h
+      const durations = [];
+      for (let i = 1; i < coords.length; i++) {
+        const dx = coords[i][0] - coords[i-1][0];
+        const dy = coords[i][1] - coords[i-1][1];
+        const dist = Math.sqrt(dx*dx + dy*dy) * 111000;
+        durations.push((dist / speed) * 1000);
+      }
+
+      moving = L.Marker.movingMarker(coords, durations, {
+        icon: L.icon({
+          iconUrl: "https://cdn-icons-png.flaticon.com/512/3097/3097144.png",
+          iconSize: [40, 40],
+          iconAnchor: [20, 20]
+        })
+      }).addTo(map);
+
+      moving.start();
+      moving.on('end', () => {
+        speak(`You have reached Bin ${b.id}. Please mark completion.`);
+      });
+    })
+    .addTo(map);
+  }
+}
+
+// ✅ Mark trip complete
+async function markComplete() {
+  const res = await fetch(`/driver_complete/${vehicleId}`, { method: "POST" });
+  const data = await res.json();
+  if (data.ok) {
+    speak(data.message);
+    document.getElementById("info").innerHTML = `<b>${data.message}</b>`;
+    setTimeout(loadAssignment, 3000);
+  } else {
+    speak("Unable to mark as complete.");
+  }
+}
+
+document.getElementById("completeBtn").addEventListener("click", markComplete);
+
+// Poll every 6s
+loadAssignment();
+setInterval(loadAssignment, 6000);
+</script>
+</body>
+</html>
