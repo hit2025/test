@@ -103,3 +103,20 @@ AI Layer (future-ready): Predictive cleaning & anomaly detection
 🏆 Pitch Line
 
 “A real-time IoT-enabled campus waste management system that detects, dispatches, and monitors bin cleaning autonomously — with intelligent route assignment, voice-assisted alerts, and live dashboard analytics.”
+
+Haversine Distance (short explanation)
+
+The Haversine formula calculates the shortest distance between two points on the Earth’s surface —
+using their latitude and longitude, assuming the Earth is a sphere.
+
+🧮 In simple terms
+
+It tells you “as-the-crow-flies” distance between two GPS coordinates —
+not road distance, but straight-line distance over the curvature of the Earth.
+
+
+🔹 Example:
+
+If Bin A = (22.0509, 88.0725)
+and Vehicle = (22.0492, 88.0705),
+Haversine distance ≈ 270 meters (straight-line distance).
