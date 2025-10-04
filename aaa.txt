@@ -1,2 +1,105 @@
 https://test-d6nq.onrender.com
 https://test-1-o97w.onrender.com
+
+
+🚮 Smart Campus Waste Management — Workflow Summary
+1️⃣ Data Layer
+
+The system has IoT-enabled smart bins that send data about their fill levels (simulated here).
+
+Each bin has attributes like:
+id, lat, lng, fill %, status (OK / FULL).
+
+A set of autonomous vehicles (waste collectors) are initialized as IDLE.
+
+2️⃣ Trigger & Detection
+
+When a bin’s fill level reaches 100%, it automatically generates an alert (/fill_random or auto simulation).
+
+The backend immediately adds an entry to the alerts list with a timestamp.
+
+3️⃣ Assignment Logic
+
+When a bin is FULL, the system calculates Haversine distances from all available (IDLE) vehicles.
+
+The nearest vehicle is assigned to that bin (/assign_nearest_full).
+
+The assignment is logged in:
+
+assignments — who was assigned when.
+
+comparison_stats — includes other vehicles and their distances for analytical comparison.
+
+4️⃣ Vehicle Animation & Route
+
+On the map, the assigned vehicle’s route is drawn using Leaflet Routing Machine.
+
+The vehicle moves dynamically along the calculated route using an animation (MovingMarker).
+
+Voice narration (speech synthesis) announces:
+
+The task assignment (with distance & ETA).
+
+The completion message after arrival.
+
+5️⃣ Trip Completion
+
+Once the vehicle finishes its path:
+
+It calls /complete_trip/{vid}/{bid}.
+
+The bin’s fill resets to 0% and status returns to OK.
+
+The vehicle returns to IDLE status.
+
+System statistics are updated (completed tasks, total distance, average ETA).
+
+6️⃣ Dashboard Visualization
+
+Simulation Tab:
+
+Real-time map (bins, vehicles, alerts).
+
+Vehicle movement & route visualization.
+
+Speech synthesis for task updates.
+
+System stats panel showing live KPIs.
+
+Dashboard Tab:
+
+Separate gauges for Air Quality and Water Quality (simulated sensors).
+
+Waste Management panels showing:
+
+Active bin levels.
+
+Vehicle statuses.
+
+Assignments & comparison stats.
+
+System performance summary.
+
+7️⃣ Automation & Continuous Loop
+
+The Auto Mode (/start_auto) runs a background simulation thread:
+
+Random bins fill gradually.
+
+Automatic alerts & assignments keep the cycle running continuously.
+
+⚙️ Tech Stack Overview
+
+Backend: FastAPI (Python)
+
+Frontend: HTML, CSS, JavaScript (Leaflet + Chart.js)
+
+Database (simulated): In-memory Python lists
+
+Visualization: Leaflet map + voice feedback
+
+AI Layer (future-ready): Predictive cleaning & anomaly detection
+
+🏆 Pitch Line
+
+“A real-time IoT-enabled campus waste management system that detects, dispatches, and monitors bin cleaning autonomously — with intelligent route assignment, voice-assisted alerts, and live dashboard analytics.”
